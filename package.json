@@ -1,0 +1,22 @@
+{
+  "name": "@gamecult/loki",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CultMesh-oriented Chrome DevTools observer daemon.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/loki-daemon.mjs",
+    "smoke": "node src/loki-daemon.mjs --once",
+    "test": "node test/fixture-cdp-smoke.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "gamecult",
+    "cultmesh",
+    "cultcache",
+    "chrome-devtools-protocol"
+  ],
+  "license": "UNLICENSED"
+}
