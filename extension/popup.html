@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Loki Chrome Bridge</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Loki</h1>
+        <span id="state" class="state">checking</span>
+      </header>
+
+      <dl>
+        <div>
+          <dt>Tabs</dt>
+          <dd id="tabs">-</dd>
+        </div>
+        <div>
+          <dt>Last sync</dt>
+          <dd id="last-sync">-</dd>
+        </div>
+        <div>
+          <dt>Endpoint</dt>
+          <dd id="endpoint">-</dd>
+        </div>
+      </dl>
+
+      <p id="error" class="error" hidden></p>
+
+      <button id="sync" type="button">Sync now</button>
+    </main>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

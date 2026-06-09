@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/loki-daemon.mjs",
     "smoke": "node src/loki-daemon.mjs --once",
-    "test": "node test/fixture-cdp-smoke.mjs"
+    "test": "node test/fixture-cdp-smoke.mjs && node test/extension-ingest-smoke.mjs"
   },
   "engines": {
     "node": ">=20"

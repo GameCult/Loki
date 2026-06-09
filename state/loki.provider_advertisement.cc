@@ -1,7 +1,7 @@
 # cultcache-text-witness v0
 # schema: gamecult.eve.provider_advertisement.v1
 # provider: loki.chrome
-# updatedAt: 2026-06-09T14:02:52.753Z
+# updatedAt: 2026-06-09T15:11:06.124Z
 {
   "schema": "gamecult.eve.provider_advertisement.v1",
   "providerId": "loki.chrome",
@@ -13,7 +13,7 @@
   "cultMeshAddress": "asgard.localhost.loki.chrome/eve/gui",
   "title": "Loki Chrome",
   "kind": "service.operator",
-  "updatedAt": "2026-06-09T14:02:52.753Z",
+  "updatedAt": "2026-06-09T15:11:06.124Z",
   "freshness": {
     "state": "unreachable",
     "lastSeenAt": null,
@@ -26,6 +26,14 @@
       "authority": "observed",
       "storage": "cultcache-cc",
       "cultMeshAddress": "asgard.localhost.loki.chrome/state/snapshot",
+      "portable": true
+    },
+    {
+      "schema": "gamecult.loki.chrome_extension_report.v0",
+      "owner": "loki.chrome",
+      "authority": "external-authority-projection",
+      "storage": "ingest-only",
+      "cultMeshAddress": "asgard.localhost.loki.chrome/ingest/chrome-extension",
       "portable": true
     },
     {
@@ -49,11 +57,12 @@
         "urlQuery": "not-observed",
         "titles": "not-observed",
         "pageContent": "not-read",
-        "cookies": "not-read"
+        "cookies": "not-read",
+        "source": "none"
       },
       "freshness": {
         "state": "unreachable",
-        "updatedAt": "2026-06-09T14:02:52.753Z"
+        "updatedAt": "2026-06-09T15:11:06.124Z"
       }
     },
     {
@@ -66,7 +75,7 @@
       "redaction": "derived-operator-surface",
       "freshness": {
         "state": "unreachable",
-        "updatedAt": "2026-06-09T14:02:52.753Z"
+        "updatedAt": "2026-06-09T15:11:06.124Z"
       }
     }
   ],
@@ -92,6 +101,14 @@
         "chrome-target-metadata"
       ],
       "note": "Requires user-launched Chrome with --remote-debugging-port."
+    },
+    {
+      "kind": "chrome-extension-ingest",
+      "address": "http://127.0.0.1:17666/ingest/chrome-extension",
+      "carries": [
+        "chrome-extension-tab-metadata"
+      ],
+      "note": "Preferred drop-in Chrome path; extension observes tab metadata and Loki owns persistence."
     },
     {
       "kind": "local-cultcache-witness",

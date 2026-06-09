@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +12,8 @@ function parseArgs(argv) {
   const config = {
     host: process.env.LOKI_CHROME_HOST ?? "127.0.0.1",
     port: Number(process.env.LOKI_CHROME_PORT ?? 9222),
+    extensionHost: process.env.LOKI_EXTENSION_HOST ?? "127.0.0.1",
+    extensionPort: Number(process.env.LOKI_EXTENSION_PORT ?? 17666),
     intervalMs: Number(process.env.LOKI_INTERVAL_MS ?? 5000),
     stateDir: process.env.LOKI_STATE_DIR ?? defaultStateDir,
     once: false,
@@ -21,6 +24,8 @@ function parseArgs(argv) {
     if (arg === "--once") config.once = true;
     else if (arg === "--host") config.host = argv[++index] ?? config.host;
     else if (arg === "--port") config.port = Number(argv[++index] ?? config.port);
+    else if (arg === "--extension-host") config.extensionHost = argv[++index] ?? config.extensionHost;
+    else if (arg === "--extension-port") config.extensionPort = Number(argv[++index] ?? config.extensionPort);
     else if (arg === "--interval-ms") config.intervalMs = Number(argv[++index] ?? config.intervalMs);
     else if (arg === "--state-dir") config.stateDir = argv[++index] ?? config.stateDir;
     else if (arg === "--help") {
@@ -35,6 +40,9 @@ function parseArgs(argv) {
   if (!Number.isFinite(config.intervalMs) || config.intervalMs < 1000) {
     throw new Error(`Invalid --interval-ms: ${config.intervalMs}`);
   }
+  if (!Number.isFinite(config.extensionPort) || config.extensionPort <= 0) {
+    throw new Error(`Invalid --extension-port: ${config.extensionPort}`);
+  }
   return config;
 }
 
@@ -43,6 +51,7 @@ function printHelp() {
 
 Usage:
   node src/loki-daemon.mjs [--once] [--host 127.0.0.1] [--port 9222]
+                           [--extension-host 127.0.0.1] [--extension-port 17666]
                            [--interval-ms 5000] [--state-dir state]
 `);
 }
@@ -79,15 +88,14 @@ async function observeChrome(config) {
       : [];
 
     return {
-      schema: "gamecult.loki.chrome_snapshot.v0",
-      providerId,
-      serviceId,
+      source: "cdp",
       observedAt,
       freshness: {
         state: "fresh",
         lastSeenAt: observedAt,
         maxAgeMs: config.intervalMs * 3,
       },
+      authority: "external-authority-projection",
       cdp: {
         endpoint: baseUrl,
         reachable: true,
@@ -97,22 +105,10 @@ async function observeChrome(config) {
         webSocketDebuggerUrl: stringOrNull(version.webSocketDebuggerUrl),
       },
       tabs,
-      summary: {
-        tabCount: tabs.length,
-        inspectableTabCount: tabs.filter((tab) => tab.webSocketDebuggerUrl).length,
-      },
-      redaction: {
-        urlQuery: "preserved",
-        titles: "preserved",
-        pageContent: "not-read",
-        cookies: "not-read",
-      },
     };
   } catch (error) {
     return {
-      schema: "gamecult.loki.chrome_snapshot.v0",
-      providerId,
-      serviceId,
+      source: "cdp",
       observedAt,
       freshness: {
         state: "unreachable",
@@ -125,18 +121,170 @@ async function observeChrome(config) {
         error: error instanceof Error ? error.message : String(error),
       },
       tabs: [],
+    };
+  }
+}
+
+function normalizeExtensionObservation(payload, config) {
+  const observedAt = new Date().toISOString();
+  if (!payload || payload.schema !== "gamecult.loki.chrome_extension_report.v0") {
+    throw new Error("Unsupported extension report schema");
+  }
+
+  const tabs = Array.isArray(payload.tabs)
+    ? payload.tabs.map(normalizeExtensionTab).sort((left, right) => Number(right.active) - Number(left.active) || left.index - right.index)
+    : [];
+
+  return {
+    source: "chrome-extension",
+    observedAt,
+    extension: {
+      reachable: true,
+      extensionVersion: stringOrNull(payload.extensionVersion),
+      browser: stringOrNull(payload.browser),
+      receivedAt: observedAt,
+      lastReportAt: stringOrNull(payload.reportedAt),
+      ingestEndpoint: `http://${config.extensionHost}:${config.extensionPort}/ingest/chrome-extension`,
+    },
+    freshness: {
+      state: "fresh",
+      lastSeenAt: observedAt,
+      maxAgeMs: config.intervalMs * 3,
+    },
+    tabs,
+  };
+}
+
+function normalizeExtensionTab(tab) {
+  return {
+    id: String(tab.id ?? ""),
+    windowId: numberOrNull(tab.windowId),
+    index: Number.isFinite(tab.index) ? tab.index : 0,
+    active: Boolean(tab.active),
+    highlighted: Boolean(tab.highlighted),
+    pinned: Boolean(tab.pinned),
+    audible: Boolean(tab.audible),
+    muted: Boolean(tab.muted),
+    incognito: Boolean(tab.incognito),
+    title: stringOrNull(tab.title),
+    url: stringOrNull(tab.url),
+    type: "page",
+    faviconUrl: stringOrNull(tab.favIconUrl),
+    devtoolsFrontendUrl: null,
+    webSocketDebuggerUrl: null,
+    attached: false,
+    canInspect: false,
+    source: "chrome-extension",
+  };
+}
+
+function buildSnapshot(config, cdpObservation, extensionObservation) {
+  const observedAt = new Date().toISOString();
+  const activeObservation = chooseActiveObservation(cdpObservation, extensionObservation);
+  const tabs = activeObservation?.tabs ?? [];
+  const cdp = cdpObservation?.cdp ?? {
+    endpoint: `http://${config.host}:${config.port}`,
+    reachable: false,
+    error: "not-observed",
+  };
+  const extension = extensionObservation?.extension ?? {
+    reachable: false,
+    ingestEndpoint: `http://${config.extensionHost}:${config.extensionPort}/ingest/chrome-extension`,
+    error: "no extension report received",
+  };
+
+  const sourceStates = {
+    cdp: cdpObservation?.freshness?.state ?? "missing",
+    chromeExtension: extensionObservation?.freshness?.state ?? "missing",
+  };
+  const freshnessState = activeObservation ? "fresh" : "unreachable";
+
+  return {
+    schema: "gamecult.loki.chrome_snapshot.v0",
+    providerId,
+    serviceId,
+    observedAt,
+    activeSource: activeObservation?.source ?? "none",
+    freshness: {
+      state: freshnessState,
+      lastSeenAt: activeObservation?.observedAt ?? null,
+      maxAgeMs: config.intervalMs * 3,
+    },
+    sources: {
+      cdp: {
+        state: sourceStates.cdp,
+        observedAt: cdpObservation?.observedAt ?? null,
+      },
+      chromeExtension: {
+        state: sourceStates.chromeExtension,
+        observedAt: extensionObservation?.observedAt ?? null,
+      },
+    },
+    cdp,
+    extension,
+    tabs,
+    summary: {
+      tabCount: tabs.length,
+      inspectableTabCount: tabs.filter((tab) => tab.webSocketDebuggerUrl).length,
+      activeTabCount: tabs.filter((tab) => tab.active).length,
+    },
+    redaction: {
+      urlQuery: activeObservation ? "preserved" : "not-observed",
+      titles: activeObservation ? "preserved" : "not-observed",
+      pageContent: "not-read",
+      cookies: "not-read",
+      source: activeObservation?.source ?? "none",
+    },
+  };
+}
+
+function chooseActiveObservation(cdpObservation, extensionObservation) {
+  if (extensionObservation?.freshness?.state === "fresh") return extensionObservation;
+  if (cdpObservation?.freshness?.state === "fresh") return cdpObservation;
+  return null;
+}
+
+function unreachableSnapshot(config, error) {
+  const observedAt = new Date().toISOString();
+  return {
+    schema: "gamecult.loki.chrome_snapshot.v0",
+    providerId,
+    serviceId,
+    observedAt,
+    activeSource: "none",
+    freshness: {
+      state: "unreachable",
+      lastSeenAt: null,
+      maxAgeMs: config.intervalMs * 3,
+    },
+    sources: {
+      cdp: { state: "unreachable", observedAt },
+      chromeExtension: { state: "missing", observedAt: null },
+    },
+    cdp: {
+      endpoint: `http://${config.host}:${config.port}`,
+      reachable: false,
+      error,
+    },
+    extension: {
+      reachable: false,
+      ingestEndpoint: `http://${config.extensionHost}:${config.extensionPort}/ingest/chrome-extension`,
+      error: "no extension report received",
+    },
+    tabs: [],
       summary: {
         tabCount: 0,
         inspectableTabCount: 0,
+        activeTabCount: 0,
       },
       redaction: {
         urlQuery: "not-observed",
         titles: "not-observed",
         pageContent: "not-read",
         cookies: "not-read",
+        source: "none",
       },
-    };
-  }
+  };
 }
 
 function normalizeTab(target) {
@@ -175,6 +323,14 @@ function buildProviderAdvertisement(snapshot) {
         authority: "observed",
         storage: "cultcache-cc",
         cultMeshAddress: "asgard.localhost.loki.chrome/state/snapshot",
+        portable: true,
+      },
+      {
+        schema: "gamecult.loki.chrome_extension_report.v0",
+        owner: providerId,
+        authority: "external-authority-projection",
+        storage: "ingest-only",
+        cultMeshAddress: "asgard.localhost.loki.chrome/ingest/chrome-extension",
         portable: true,
       },
       {
@@ -232,6 +388,12 @@ function buildProviderAdvertisement(snapshot) {
         note: "Requires user-launched Chrome with --remote-debugging-port.",
       },
       {
+        kind: "chrome-extension-ingest",
+        address: snapshot.extension.ingestEndpoint,
+        carries: ["chrome-extension-tab-metadata"],
+        note: "Preferred drop-in Chrome path; extension observes tab metadata and Loki owns persistence.",
+      },
+      {
         kind: "local-cultcache-witness",
         address: "state/",
         carries: [
@@ -248,7 +410,7 @@ function buildProviderAdvertisement(snapshot) {
 }
 
 function buildEveSurface(snapshot) {
-  const statusTone = snapshot.cdp.reachable ? "ok" : "warning";
+  const statusTone = snapshot.freshness.state === "fresh" ? "ok" : "warning";
   const tabRows = snapshot.tabs.slice(0, 20).map((tab) => ({
     id: `tab-${stableId(tab.id)}`,
     kind: "inspector.kv",
@@ -285,22 +447,33 @@ function buildEveSurface(snapshot) {
           {
             id: "loki.chrome.summary",
             kind: "panel",
-            props: { title: "Chrome DevTools", tone: statusTone },
+            props: { title: "Chrome Observation", tone: statusTone },
             children: [
-              metric("reachable", "Reachable", snapshot.cdp.reachable ? "yes" : "no", statusTone),
+              metric("reachable", "Reachable", snapshot.freshness.state === "fresh" ? "yes" : "no", statusTone),
+              metric("source", "Source", snapshot.activeSource, statusTone),
               metric("tabs", "Tabs", String(snapshot.summary.tabCount), "neutral"),
               metric("inspectable", "Inspectable", String(snapshot.summary.inspectableTabCount), "neutral"),
               {
-                id: "loki.chrome.endpoint",
+                id: "loki.chrome.extension-endpoint",
                 kind: "inspector.kv",
                 props: {
-                  label: "Endpoint",
-                  value: snapshot.cdp.endpoint,
-                  tone: statusTone,
+                  label: "Extension ingest",
+                  value: snapshot.extension.ingestEndpoint,
+                  tone: snapshot.extension.reachable ? "ok" : "muted",
                 },
                 children: [],
               },
-              snapshot.cdp.error
+              {
+                id: "loki.chrome.cdp-endpoint",
+                kind: "inspector.kv",
+                props: {
+                  label: "CDP endpoint",
+                  value: snapshot.cdp.endpoint,
+                  tone: snapshot.cdp.reachable ? "ok" : "muted",
+                },
+                children: [],
+              },
+              snapshot.cdp.error && !snapshot.extension.reachable
                 ? {
                     id: "loki.chrome.error",
                     kind: "text",
@@ -308,11 +481,11 @@ function buildEveSurface(snapshot) {
                     children: [],
                   }
                 : {
-                    id: "loki.chrome.browser",
+                    id: "loki.chrome.source-state",
                     kind: "inspector.kv",
                     props: {
-                      label: "Browser",
-                      value: snapshot.cdp.browser ?? "unknown",
+                      label: "Source state",
+                      value: `extension=${snapshot.sources.chromeExtension.state}; cdp=${snapshot.sources.cdp.state}`,
                       tone: "neutral",
                     },
                     children: [],
@@ -368,6 +541,10 @@ function stringOrNull(value) {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function numberOrNull(value) {
+  return Number.isFinite(value) ? value : null;
+}
+
 async function writeTypedDocument(filePath, document) {
   await mkdir(dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.${process.pid}.tmp`;
@@ -397,11 +574,107 @@ async function publishSnapshot(config, snapshot) {
 }
 
 async function tick(config) {
-  const snapshot = await observeChrome(config);
+  const cdpObservation = await observeChrome(config);
+  const snapshot = buildSnapshot(config, cdpObservation, runtime.extensionObservation);
   await publishSnapshot(config, snapshot);
   const state = snapshot.freshness.state;
   const count = snapshot.summary.tabCount;
-  console.log(`${snapshot.observedAt} ${state} tabs=${count} endpoint=${snapshot.cdp.endpoint}`);
+  runtime.lastSnapshot = snapshot;
+  console.log(`${snapshot.observedAt} ${state} source=${snapshot.activeSource} tabs=${count} cdp=${snapshot.sources.cdp.state} extension=${snapshot.sources.chromeExtension.state}`);
+}
+
+const runtime = {
+  extensionObservation: null,
+  lastSnapshot: null,
+};
+
+function startExtensionIngestServer(config) {
+  const server = createServer(async (request, response) => {
+    setCorsHeaders(response);
+
+    if (request.method === "OPTIONS") {
+      response.writeHead(204);
+      response.end();
+      return;
+    }
+
+    try {
+      if (request.method === "GET" && request.url === "/health") {
+        writeJson(response, 200, {
+          ok: true,
+          providerId,
+          serviceId,
+          ingest: `http://${config.extensionHost}:${config.extensionPort}/ingest/chrome-extension`,
+          lastSnapshotAt: runtime.lastSnapshot?.observedAt ?? null,
+        });
+        return;
+      }
+
+      if (request.method === "GET" && request.url === "/state") {
+        writeJson(response, 200, runtime.lastSnapshot ?? unreachableSnapshot(config, "no snapshot published yet"));
+        return;
+      }
+
+      if (request.method === "POST" && request.url === "/ingest/chrome-extension") {
+        const payload = await readJsonBody(request);
+        runtime.extensionObservation = normalizeExtensionObservation(payload, config);
+        const cdpObservation = await observeChrome(config);
+        const snapshot = buildSnapshot(config, cdpObservation, runtime.extensionObservation);
+        await publishSnapshot(config, snapshot);
+        runtime.lastSnapshot = snapshot;
+        writeJson(response, 202, {
+          accepted: true,
+          schema: snapshot.schema,
+          activeSource: snapshot.activeSource,
+          tabs: snapshot.summary.tabCount,
+          observedAt: snapshot.observedAt,
+        });
+        return;
+      }
+
+      writeJson(response, 404, { error: "not found" });
+    } catch (error) {
+      writeJson(response, 400, { error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  server.listen(config.extensionPort, config.extensionHost, () => {
+    console.log(`Loki extension ingest listening on http://${config.extensionHost}:${config.extensionPort}`);
+  });
+  return server;
+}
+
+function setCorsHeaders(response) {
+  response.setHeader("access-control-allow-origin", "*");
+  response.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
+  response.setHeader("access-control-allow-headers", "content-type");
+}
+
+function writeJson(response, statusCode, body) {
+  response.writeHead(statusCode, { "content-type": "application/json" });
+  response.end(JSON.stringify(body));
+}
+
+function readJsonBody(request) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 1024 * 1024) {
+        request.destroy();
+        reject(new Error("request body too large"));
+      }
+    });
+    request.on("end", () => {
+      try {
+        resolve(JSON.parse(body || "{}"));
+      } catch (error) {
+        reject(error);
+      }
+    });
+    request.on("error", reject);
+  });
 }
 
 async function main() {
@@ -409,6 +682,7 @@ async function main() {
   await tick(config);
   if (config.once) return;
 
+  startExtensionIngestServer(config);
   setInterval(() => {
     tick(config).catch((error) => {
       console.error(error);

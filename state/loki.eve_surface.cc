@@ -1,15 +1,15 @@
 # cultcache-text-witness v0
 # schema: gamecult.eve.surface.v1
 # provider: loki.chrome
-# updatedAt: 2026-06-09T14:02:52.753Z
+# updatedAt: 2026-06-09T15:11:06.124Z
 {
   "type": "surface-state",
   "schema": "gamecult.eve.surface.v1",
   "providerId": "loki.chrome",
   "providerKind": "service.operator",
   "title": "Loki Chrome",
-  "version": 1781013772753,
-  "updatedAt": "2026-06-09T14:02:52.753Z",
+  "version": 1781017866124,
+  "updatedAt": "2026-06-09T15:11:06.124Z",
   "surface": {
     "root": {
       "id": "loki.chrome.root",
@@ -27,7 +27,7 @@
           "id": "loki.chrome.summary",
           "kind": "panel",
           "props": {
-            "title": "Chrome DevTools",
+            "title": "Chrome Observation",
             "tone": "warning"
           },
           "children": [
@@ -37,6 +37,16 @@
               "props": {
                 "label": "Reachable",
                 "value": "no",
+                "tone": "warning"
+              },
+              "children": []
+            },
+            {
+              "id": "loki.chrome.metric.source",
+              "kind": "metric",
+              "props": {
+                "label": "Source",
+                "value": "none",
                 "tone": "warning"
               },
               "children": []
@@ -62,12 +72,22 @@
               "children": []
             },
             {
-              "id": "loki.chrome.endpoint",
+              "id": "loki.chrome.extension-endpoint",
               "kind": "inspector.kv",
               "props": {
-                "label": "Endpoint",
+                "label": "Extension ingest",
+                "value": "http://127.0.0.1:17666/ingest/chrome-extension",
+                "tone": "muted"
+              },
+              "children": []
+            },
+            {
+              "id": "loki.chrome.cdp-endpoint",
+              "kind": "inspector.kv",
+              "props": {
+                "label": "CDP endpoint",
                 "value": "http://127.0.0.1:9222",
-                "tone": "warning"
+                "tone": "muted"
               },
               "children": []
             },
