@@ -151,7 +151,18 @@ function normalizeExtensionObservation(payload, config) {
       lastSeenAt: observedAt,
       maxAgeMs: config.intervalMs * 3,
     },
+    debugProbe: normalizeDebugProbe(payload.debugProbe),
     tabs,
+  };
+}
+
+function normalizeDebugProbe(debugProbe) {
+  if (!debugProbe || debugProbe.schema !== "gamecult.loki.chrome_debug_probe.v0") return null;
+  return {
+    ...debugProbe,
+    providerId,
+    serviceId,
+    ingestedAt: new Date().toISOString(),
   };
 }
 
@@ -222,11 +233,14 @@ function buildSnapshot(config, cdpObservation, extensionObservation) {
     },
     cdp,
     extension,
+    debugProbe: extensionObservation?.debugProbe ?? null,
     tabs,
     summary: {
       tabCount: tabs.length,
       inspectableTabCount: tabs.filter((tab) => tab.webSocketDebuggerUrl).length,
       activeTabCount: tabs.filter((tab) => tab.active).length,
+      debugProbeAttachedTabCount: extensionObservation?.debugProbe?.summary?.attachedTabCount ?? 0,
+      debugProbeAttemptedTabCount: extensionObservation?.debugProbe?.summary?.attemptedTabCount ?? 0,
     },
     redaction: {
       urlQuery: activeObservation ? "preserved" : "not-observed",
@@ -234,6 +248,7 @@ function buildSnapshot(config, cdpObservation, extensionObservation) {
       pageContent: "not-read",
       cookies: "not-read",
       source: activeObservation?.source ?? "none",
+      debugProbe: extensionObservation?.debugProbe ? extensionObservation.debugProbe.redaction : "not-run",
     },
   };
 }
@@ -334,6 +349,14 @@ function buildProviderAdvertisement(snapshot) {
         portable: true,
       },
       {
+        schema: "gamecult.loki.chrome_debug_probe.v0",
+        owner: providerId,
+        authority: "observed",
+        storage: "cultcache-cc",
+        cultMeshAddress: "asgard.localhost.loki.chrome/state/debug-probe",
+        portable: true,
+      },
+      {
         schema: "gamecult.eve.surface.v1",
         owner: providerId,
         authority: "derived",
@@ -365,6 +388,17 @@ function buildProviderAdvertisement(snapshot) {
           updatedAt,
         },
       },
+      {
+        id: "loki.chrome.debug_probe",
+        kind: "cc-export",
+        path: "state/loki.chrome_debug_probe.cc",
+        schemas: ["gamecult.loki.chrome_debug_probe.v0"],
+        redaction: snapshot.debugProbe?.redaction ?? "not-run",
+        freshness: {
+          state: snapshot.debugProbe ? "fresh" : "missing",
+          updatedAt: snapshot.debugProbe?.ingestedAt ?? null,
+        },
+      },
     ],
     surfaces: [
       {
@@ -391,7 +425,7 @@ function buildProviderAdvertisement(snapshot) {
         kind: "chrome-extension-ingest",
         address: snapshot.extension.ingestEndpoint,
         carries: ["chrome-extension-tab-metadata"],
-        note: "Preferred drop-in Chrome path; extension observes tab metadata and Loki owns persistence.",
+        note: "Preferred drop-in Chrome path; extension observes tab metadata and can run explicit chrome.debugger sweeps.",
       },
       {
         kind: "local-cultcache-witness",
@@ -400,6 +434,7 @@ function buildProviderAdvertisement(snapshot) {
           "state/loki.chrome_snapshot.cc",
           "state/loki.provider_advertisement.cc",
           "state/loki.eve_surface.cc",
+          "state/loki.chrome_debug_probe.cc",
         ],
       },
     ],
@@ -453,6 +488,14 @@ function buildEveSurface(snapshot) {
               metric("source", "Source", snapshot.activeSource, statusTone),
               metric("tabs", "Tabs", String(snapshot.summary.tabCount), "neutral"),
               metric("inspectable", "Inspectable", String(snapshot.summary.inspectableTabCount), "neutral"),
+              metric(
+                "debug-probe",
+                "Debug sweep",
+                snapshot.debugProbe
+                  ? `${snapshot.summary.debugProbeAttachedTabCount}/${snapshot.summary.debugProbeAttemptedTabCount} tabs`
+                  : "not run",
+                snapshot.debugProbe ? "ok" : "muted",
+              ),
               {
                 id: "loki.chrome.extension-endpoint",
                 kind: "inspector.kv",
@@ -568,6 +611,9 @@ async function publishSnapshot(config, snapshot) {
     writeTypedDocument(join(config.stateDir, "loki.chrome_snapshot.cc"), snapshot),
     writeTypedDocument(join(config.stateDir, "loki.provider_advertisement.cc"), advertisement),
     writeTypedDocument(join(config.stateDir, "loki.eve_surface.cc"), surface),
+    snapshot.debugProbe
+      ? writeTypedDocument(join(config.stateDir, "loki.chrome_debug_probe.cc"), snapshot.debugProbe)
+      : Promise.resolve(),
   ]);
 
   return { advertisement, surface };
@@ -627,6 +673,7 @@ function startExtensionIngestServer(config) {
           schema: snapshot.schema,
           activeSource: snapshot.activeSource,
           tabs: snapshot.summary.tabCount,
+          debugProbe: snapshot.debugProbe ? snapshot.debugProbe : null,
           observedAt: snapshot.observedAt,
         });
         return;

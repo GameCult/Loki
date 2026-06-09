@@ -85,6 +85,12 @@ button {
   cursor: pointer;
 }
 
+button + button {
+  margin-top: 8px;
+  border-color: #34516f;
+  background: #386181;
+}
+
 button:disabled {
   cursor: wait;
   opacity: 0.65;

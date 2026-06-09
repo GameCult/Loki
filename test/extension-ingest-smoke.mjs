@@ -38,6 +38,42 @@ try {
       browser: "Chrome fixture",
       reportedAt: new Date().toISOString(),
       reason: "smoke",
+      debugProbe: {
+        schema: "gamecult.loki.chrome_debug_probe.v0",
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        protocolVersion: "1.3",
+        targetCount: 1,
+        targets: [{ id: "fixture-target", tabId: 100, type: "page", title: "Portal das Financas", url: "https://sitfiscal.portaldasfinancas.gov.pt/geral/siteMap", attached: false }],
+        tabs: [{
+          tabId: 100,
+          windowId: 1,
+          title: "Portal das Financas",
+          url: "https://sitfiscal.portaldasfinancas.gov.pt/geral/siteMap",
+          attached: true,
+          attachError: null,
+          commands: [{ method: "Page.getFrameTree", ok: true }],
+          frameTree: { frameTree: { frame: { id: "frame-1", url: "https://sitfiscal.portaldasfinancas.gov.pt/geral/siteMap" } } },
+          runtime: { result: { type: "object", value: { href: "https://sitfiscal.portaldasfinancas.gov.pt/geral/siteMap" } } },
+          performanceMetrics: { metrics: [] },
+          securityState: null,
+          domRoot: { root: { nodeId: 1, nodeName: "#document" } },
+        }],
+        summary: {
+          attemptedTabCount: 1,
+          attachedTabCount: 1,
+          failedTabCount: 0,
+          commandCount: 1,
+          commandFailureCount: 0,
+        },
+        redaction: {
+          pageContent: "not-read",
+          cookies: "not-read",
+          responseBodies: "not-read",
+          domTree: "root-node-only",
+          runtimeEvaluation: "fixture",
+        },
+      },
       tabs: [
         {
           id: 100,
@@ -62,11 +98,15 @@ try {
   }
 
   const snapshotText = await readFile(join(stateDir, "loki.chrome_snapshot.cc"), "utf8");
+  const debugProbeText = await readFile(join(stateDir, "loki.chrome_debug_probe.cc"), "utf8");
   if (!snapshotText.includes('"activeSource": "chrome-extension"')) {
     throw new Error("snapshot did not choose chrome-extension as active source");
   }
   if (!snapshotText.includes("Portal das Financas")) {
     throw new Error("snapshot did not include extension tab");
+  }
+  if (!debugProbeText.includes('"schema": "gamecult.loki.chrome_debug_probe.v0"')) {
+    throw new Error("debug probe witness was not written");
   }
 
   console.log("extension ingest smoke passed");

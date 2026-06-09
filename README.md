@@ -41,8 +41,14 @@ Then install the extension:
 4. Select `E:\Projects\Loki\extension`.
 
 The extension posts tab metadata to
-`http://127.0.0.1:17666/ingest/chrome-extension`. It does not read page DOM,
-cookies, or page content.
+`http://127.0.0.1:17666/ingest/chrome-extension`. Its normal sync does not read
+page DOM, cookies, or page content.
+
+The popup also exposes `Debug sweep`. Chrome will warn that Loki can debug
+pages because the extension uses `chrome.debugger`. A sweep attaches to each
+debuggable tab, probes Chrome Debugger Protocol domains, records frame/runtime/
+performance/security/root-DOM metadata, then detaches. It does not read response
+bodies, cookies, form values, or full page DOM.
 
 ## CDP Observation
 
@@ -65,6 +71,7 @@ npm run smoke
 Loki writes:
 
 - `state/loki.chrome_snapshot.cc`
+- `state/loki.chrome_debug_probe.cc`
 - `state/loki.provider_advertisement.cc`
 - `state/loki.eve_surface.cc`
 

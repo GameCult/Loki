@@ -8,20 +8,24 @@ CultMesh/Eve consumers while keeping Chrome installation easy for the operator.
 ## Current Mechanism
 
 The Chrome extension observes tab metadata with explicit Chrome permissions and
-posts reports to Loki's localhost ingest endpoint. Chrome can also expose
-DevTools metadata on `127.0.0.1:{port}` when started with
-`--remote-debugging-port`. Loki normalizes both sources into one snapshot and
-writes three documents from that snapshot.
+posts reports to Loki's localhost ingest endpoint. On command, it also uses
+`chrome.debugger` to attach to debuggable tabs, probe Chrome Debugger Protocol
+domains, and detach. Chrome can also expose DevTools metadata on
+`127.0.0.1:{port}` when started with `--remote-debugging-port`. Loki normalizes
+these sources into one snapshot and writes typed witness documents from that
+state.
 
 ```mermaid
 flowchart LR
   Extension["Chrome extension"] --> Ingest["extension ingest"]
+  Debugger["chrome.debugger sweep"] --> Ingest
   Chrome["Chrome CDP endpoint"] --> Observe["observe CDP"]
   Config["Loki config"] --> Ingest
   Config --> Observe
   Ingest --> Combine["combined snapshot"]
   Observe --> Combine
   Combine --> Snapshot["chrome_snapshot.cc"]
+  Combine --> Debug["chrome_debug_probe.cc"]
   Snapshot --> Provider["provider_advertisement.cc"]
   Snapshot --> Surface["eve_surface.cc"]
 ```
@@ -30,6 +34,7 @@ flowchart LR
 
 - CDP reachability is observed state, not assumed capability.
 - Extension reachability is observed state, not assumed capability.
+- Debug sweeps are explicit observations, not continuous hidden attachment.
 - Chrome owns page reality; Loki owns only the observation snapshot.
 - `.cc` witnesses are the durable local state surface.
 - Eve/CultUI output is derived from the same snapshot as the witness.

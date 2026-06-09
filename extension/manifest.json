@@ -5,6 +5,7 @@
   "description": "Publishes Chrome tab metadata to the local Loki CultMesh daemon.",
   "permissions": [
     "alarms",
+    "debugger",
     "storage",
     "tabs"
   ],
