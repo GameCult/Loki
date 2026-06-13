@@ -44,6 +44,12 @@ The extension posts tab metadata to
 `http://127.0.0.1:17666/ingest/chrome-extension`. Its normal sync does not read
 page DOM, cookies, or page content.
 
+Use `Snapshot active tab` in the popup when Codex needs help reading a page that
+only your authenticated Chrome session can see. That action captures only the
+current active tab, records visible text, headings, links, and visible form
+controls, and writes `state/loki.chrome_page_snapshot.cc`. It does not read
+cookies, response bodies, password values, or hidden inputs.
+
 The popup also exposes `Debug sweep`. Chrome will warn that Loki can debug
 pages because the extension uses `chrome.debugger`. A sweep attaches to each
 debuggable tab, probes Chrome Debugger Protocol domains, records frame/runtime/
@@ -72,6 +78,7 @@ Loki writes:
 
 - `state/loki.chrome_snapshot.cc`
 - `state/loki.chrome_debug_probe.cc`
+- `state/loki.chrome_page_snapshot.cc`
 - `state/loki.provider_advertisement.cc`
 - `state/loki.eve_surface.cc`
 

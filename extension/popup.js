@@ -3,8 +3,10 @@ const tabsEl = document.querySelector("#tabs");
 const lastSyncEl = document.querySelector("#last-sync");
 const endpointEl = document.querySelector("#endpoint");
 const debugEl = document.querySelector("#debug");
+const pageSnapshotEl = document.querySelector("#page-snapshot");
 const errorEl = document.querySelector("#error");
 const syncButton = document.querySelector("#sync");
+const snapshotActiveTabButton = document.querySelector("#snapshot-active-tab");
 const debugSweepButton = document.querySelector("#debug-sweep");
 
 syncButton.addEventListener("click", async () => {
@@ -21,6 +23,13 @@ debugSweepButton.addEventListener("click", async () => {
   debugSweepButton.disabled = false;
 });
 
+snapshotActiveTabButton.addEventListener("click", async () => {
+  snapshotActiveTabButton.disabled = true;
+  await chrome.runtime.sendMessage({ type: "loki.snapshot-active-tab" });
+  await render();
+  snapshotActiveTabButton.disabled = false;
+});
+
 await render();
 
 async function render() {
@@ -33,6 +42,7 @@ async function render() {
     stateEl.className = "state";
     tabsEl.textContent = "-";
     debugEl.textContent = "-";
+    pageSnapshotEl.textContent = "-";
     lastSyncEl.textContent = "-";
     errorEl.hidden = true;
     return;
@@ -42,6 +52,7 @@ async function render() {
   stateEl.className = `state ${status.ok ? "ok" : "bad"}`;
   tabsEl.textContent = String(status.tabCount ?? 0);
   debugEl.textContent = formatDebugProbe(status.debugProbe);
+  pageSnapshotEl.textContent = formatPageSnapshot(status.pageSnapshot);
   lastSyncEl.textContent = status.lastSyncAt ? new Date(status.lastSyncAt).toLocaleTimeString() : "-";
 
   if (status.error) {
@@ -56,4 +67,12 @@ function formatDebugProbe(debugProbe) {
   if (!debugProbe) return "not run";
   const summary = debugProbe.summary ?? {};
   return `${summary.attachedTabCount ?? 0}/${summary.attemptedTabCount ?? 0} attached`;
+}
+
+function formatPageSnapshot(pageSnapshot) {
+  if (!pageSnapshot) return "not captured";
+  if (pageSnapshot.error) return pageSnapshot.error;
+  const textLength = pageSnapshot.content?.visibleTextLength ?? 0;
+  const controlCount = pageSnapshot.forms?.controlCount ?? 0;
+  return `${textLength} chars, ${controlCount} controls`;
 }

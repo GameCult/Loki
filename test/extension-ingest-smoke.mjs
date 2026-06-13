@@ -74,6 +74,51 @@ try {
           runtimeEvaluation: "fixture",
         },
       },
+      pageSnapshot: {
+        schema: "gamecult.loki.chrome_page_snapshot.v0",
+        capturedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        tab: {
+          id: 100,
+          windowId: 1,
+          index: 0,
+          active: true,
+          highlighted: true,
+          pinned: false,
+          audible: false,
+          muted: false,
+          incognito: false,
+          title: "Portal das Financas",
+          url: "https://sitfiscal.portaldasfinancas.gov.pt/geral/siteMap",
+          favIconUrl: null,
+        },
+        attached: true,
+        attachError: null,
+        error: null,
+        content: {
+          href: "https://sitfiscal.portaldasfinancas.gov.pt/geral/siteMap",
+          title: "Portal das Financas",
+          readyState: "complete",
+          language: "pt",
+          visibleText: "Entregar declaracao IRS Consultar pagamentos",
+          visibleTextLength: 43,
+          headings: [{ level: "h1", text: "Portal das Financas" }],
+          links: [{ text: "Consultar pagamentos", href: "https://sitfiscal.portaldasfinancas.gov.pt/pagamentos" }],
+        },
+        forms: {
+          controlCount: 1,
+          controls: [{ tag: "button", type: "button", label: "", selector: "button", name: null, id: null, disabled: false, required: false, value: "" }],
+        },
+        redaction: {
+          trigger: "operator-popup-click",
+          scope: "active-tab-only",
+          pageContent: "visible-text-and-page-structure",
+          cookies: "not-read",
+          passwordValues: "redacted",
+          hiddenInputs: "omitted",
+          responseBodies: "not-read",
+        },
+      },
       tabs: [
         {
           id: 100,
@@ -99,6 +144,7 @@ try {
 
   const snapshotText = await readFile(join(stateDir, "loki.chrome_snapshot.cc"), "utf8");
   const debugProbeText = await readFile(join(stateDir, "loki.chrome_debug_probe.cc"), "utf8");
+  const pageSnapshotText = await readFile(join(stateDir, "loki.chrome_page_snapshot.cc"), "utf8");
   if (!snapshotText.includes('"activeSource": "chrome-extension"')) {
     throw new Error("snapshot did not choose chrome-extension as active source");
   }
@@ -107,6 +153,12 @@ try {
   }
   if (!debugProbeText.includes('"schema": "gamecult.loki.chrome_debug_probe.v0"')) {
     throw new Error("debug probe witness was not written");
+  }
+  if (!pageSnapshotText.includes('"schema": "gamecult.loki.chrome_page_snapshot.v0"')) {
+    throw new Error("page snapshot witness was not written");
+  }
+  if (!pageSnapshotText.includes("Entregar declaracao IRS")) {
+    throw new Error("page snapshot did not preserve visible page text");
   }
 
   console.log("extension ingest smoke passed");

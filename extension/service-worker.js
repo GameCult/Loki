@@ -35,6 +35,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     debugSweep().then(sendResponse);
     return true;
   }
+  if (message?.type === "loki.snapshot-active-tab") {
+    snapshotActiveTab().then(sendResponse);
+    return true;
+  }
   if (message?.type === "loki.get-status") {
     getStatus().then(sendResponse);
     return true;
@@ -63,10 +67,11 @@ async function syncTabs(reason, extra = {}) {
         activeTabCount: tabs.filter((tab) => tab.active).length,
       },
       redaction: {
-        pageContent: "not-read",
+        pageContent: extra.pageSnapshot ? "explicit-active-tab-visible-text" : "not-read",
         cookies: "not-read",
         tabMetadata: "title-url-favicon-window-state",
         debugProbe: extra.debugProbe ? "runtime-frame-performance-security-metadata" : "not-run",
+        pageSnapshot: extra.pageSnapshot ? extra.pageSnapshot.redaction : "not-run",
       },
       ...extra,
     };
@@ -89,6 +94,7 @@ async function syncTabs(reason, extra = {}) {
       lastSyncAt: new Date().toISOString(),
       tabCount: tabs.length,
       debugProbe: responseBody.debugProbe ?? null,
+      pageSnapshot: responseBody.pageSnapshot ?? null,
       activeSource: responseBody.activeSource ?? "unknown",
       error: null,
     };
@@ -103,12 +109,171 @@ async function syncTabs(reason, extra = {}) {
       lastSyncAt: new Date().toISOString(),
       tabCount: 0,
       debugProbe: null,
+      pageSnapshot: null,
       activeSource: "none",
       error: error instanceof Error ? error.message : String(error),
     };
     await chrome.storage.local.set({ [STATUS_KEY]: status });
     return status;
   }
+}
+
+async function snapshotActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const startedAt = new Date().toISOString();
+  if (!tab || !Number.isInteger(tab.id)) {
+    return syncTabs("active-page-snapshot", {
+      pageSnapshot: failedPageSnapshot(startedAt, "No active tab is available."),
+    });
+  }
+
+  const pageSnapshot = await capturePageSnapshot(tab, startedAt);
+  return syncTabs("active-page-snapshot", { pageSnapshot });
+}
+
+async function capturePageSnapshot(tab, startedAt) {
+  const target = { tabId: tab.id };
+  const pageSnapshot = {
+    schema: "gamecult.loki.chrome_page_snapshot.v0",
+    capturedAt: startedAt,
+    completedAt: null,
+    tab: projectTab(tab),
+    attached: false,
+    attachError: null,
+    error: null,
+    content: null,
+    forms: null,
+    redaction: {
+      trigger: "operator-popup-click",
+      scope: "active-tab-only",
+      pageContent: "visible-text-and-page-structure",
+      cookies: "not-read",
+      passwordValues: "redacted",
+      hiddenInputs: "omitted",
+      responseBodies: "not-read",
+    },
+  };
+
+  try {
+    await chromeDebuggerAttach(target, "1.3");
+    pageSnapshot.attached = true;
+    await chromeDebuggerSendCommand(target, "Runtime.enable");
+    const result = await chromeDebuggerSendCommand(target, "Runtime.evaluate", {
+      expression: pageSnapshotExpression(),
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    const value = result?.result?.value;
+    if (!value || typeof value !== "object") {
+      throw new Error("Page snapshot did not return an object.");
+    }
+    pageSnapshot.content = value.content ?? null;
+    pageSnapshot.forms = value.forms ?? null;
+  } catch (error) {
+    pageSnapshot.error = error instanceof Error ? error.message : String(error);
+    if (!pageSnapshot.attached) pageSnapshot.attachError = pageSnapshot.error;
+  } finally {
+    pageSnapshot.completedAt = new Date().toISOString();
+    if (pageSnapshot.attached) {
+      await chromeDebuggerDetach(target).catch(() => {});
+    }
+  }
+
+  return pageSnapshot;
+}
+
+function failedPageSnapshot(startedAt, error) {
+  return {
+    schema: "gamecult.loki.chrome_page_snapshot.v0",
+    capturedAt: startedAt,
+    completedAt: new Date().toISOString(),
+    tab: null,
+    attached: false,
+    attachError: error,
+    error,
+    content: null,
+    forms: null,
+    redaction: {
+      trigger: "operator-popup-click",
+      scope: "active-tab-only",
+      pageContent: "not-read",
+      cookies: "not-read",
+      passwordValues: "not-read",
+      hiddenInputs: "not-read",
+      responseBodies: "not-read",
+    },
+  };
+}
+
+function pageSnapshotExpression() {
+  return `(() => {
+    const limit = (value, max) => String(value ?? "").replace(/\\s+/g, " ").trim().slice(0, max);
+    const selectorFor = (element) => {
+      if (!element) return null;
+      if (element.id) return "#" + CSS.escape(element.id);
+      const name = element.getAttribute("name");
+      if (name) return element.tagName.toLowerCase() + "[name=" + JSON.stringify(name) + "]";
+      return element.tagName.toLowerCase();
+    };
+    const labelFor = (control) => {
+      const explicit = control.id ? document.querySelector("label[for=" + JSON.stringify(control.id) + "]") : null;
+      const implicit = control.closest("label");
+      const aria = control.getAttribute("aria-label") || control.getAttribute("title") || control.getAttribute("placeholder");
+      return limit(explicit?.innerText || implicit?.innerText || aria || "", 300);
+    };
+    const controls = Array.from(document.querySelectorAll("input, select, textarea, button"))
+      .filter((control) => {
+        const type = (control.getAttribute("type") || control.tagName).toLowerCase();
+        return type !== "hidden" && type !== "password";
+      })
+      .slice(0, 300)
+      .map((control) => {
+        const tag = control.tagName.toLowerCase();
+        const type = (control.getAttribute("type") || tag).toLowerCase();
+        const option = tag === "select" ? control.selectedOptions?.[0] : null;
+        const value = type === "checkbox" || type === "radio"
+          ? String(Boolean(control.checked))
+          : tag === "select"
+            ? limit(option?.innerText || option?.label || "", 500)
+            : limit(control.value || "", 500);
+        return {
+          tag,
+          type,
+          label: labelFor(control),
+          selector: selectorFor(control),
+          name: control.getAttribute("name"),
+          id: control.id || null,
+          disabled: Boolean(control.disabled),
+          required: Boolean(control.required),
+          value,
+        };
+      });
+    const links = Array.from(document.links).slice(0, 200).map((link) => ({
+      text: limit(link.innerText || link.textContent || "", 300),
+      href: link.href,
+    }));
+    const headings = Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6")).slice(0, 80).map((heading) => ({
+      level: heading.tagName.toLowerCase(),
+      text: limit(heading.innerText || heading.textContent || "", 500),
+    }));
+    const visibleText = limit(document.body?.innerText || "", 60000);
+    return {
+      content: {
+        href: location.href,
+        title: document.title,
+        readyState: document.readyState,
+        language: document.documentElement.lang || null,
+        visibleText,
+        visibleTextLength: visibleText.length,
+        headings,
+        links,
+      },
+      forms: {
+        controlCount: controls.length,
+        controls,
+      },
+    };
+  })()`;
 }
 
 async function debugSweep() {

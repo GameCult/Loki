@@ -152,6 +152,7 @@ function normalizeExtensionObservation(payload, config) {
       maxAgeMs: config.intervalMs * 3,
     },
     debugProbe: normalizeDebugProbe(payload.debugProbe),
+    pageSnapshot: normalizePageSnapshot(payload.pageSnapshot),
     tabs,
   };
 }
@@ -160,6 +161,16 @@ function normalizeDebugProbe(debugProbe) {
   if (!debugProbe || debugProbe.schema !== "gamecult.loki.chrome_debug_probe.v0") return null;
   return {
     ...debugProbe,
+    providerId,
+    serviceId,
+    ingestedAt: new Date().toISOString(),
+  };
+}
+
+function normalizePageSnapshot(pageSnapshot) {
+  if (!pageSnapshot || pageSnapshot.schema !== "gamecult.loki.chrome_page_snapshot.v0") return null;
+  return {
+    ...pageSnapshot,
     providerId,
     serviceId,
     ingestedAt: new Date().toISOString(),
@@ -234,6 +245,7 @@ function buildSnapshot(config, cdpObservation, extensionObservation) {
     cdp,
     extension,
     debugProbe: extensionObservation?.debugProbe ?? null,
+    pageSnapshot: extensionObservation?.pageSnapshot ?? null,
     tabs,
     summary: {
       tabCount: tabs.length,
@@ -241,14 +253,17 @@ function buildSnapshot(config, cdpObservation, extensionObservation) {
       activeTabCount: tabs.filter((tab) => tab.active).length,
       debugProbeAttachedTabCount: extensionObservation?.debugProbe?.summary?.attachedTabCount ?? 0,
       debugProbeAttemptedTabCount: extensionObservation?.debugProbe?.summary?.attemptedTabCount ?? 0,
+      pageSnapshotVisibleTextLength: extensionObservation?.pageSnapshot?.content?.visibleTextLength ?? 0,
+      pageSnapshotFormControlCount: extensionObservation?.pageSnapshot?.forms?.controlCount ?? 0,
     },
     redaction: {
       urlQuery: activeObservation ? "preserved" : "not-observed",
       titles: activeObservation ? "preserved" : "not-observed",
-      pageContent: "not-read",
+      pageContent: extensionObservation?.pageSnapshot ? "explicit-active-tab-visible-text" : "not-read",
       cookies: "not-read",
       source: activeObservation?.source ?? "none",
       debugProbe: extensionObservation?.debugProbe ? extensionObservation.debugProbe.redaction : "not-run",
+      pageSnapshot: extensionObservation?.pageSnapshot ? extensionObservation.pageSnapshot.redaction : "not-run",
     },
   };
 }
@@ -287,18 +302,24 @@ function unreachableSnapshot(config, error) {
       error: "no extension report received",
     },
     tabs: [],
-      summary: {
-        tabCount: 0,
-        inspectableTabCount: 0,
-        activeTabCount: 0,
-      },
-      redaction: {
-        urlQuery: "not-observed",
-        titles: "not-observed",
-        pageContent: "not-read",
-        cookies: "not-read",
-        source: "none",
-      },
+    pageSnapshot: null,
+    debugProbe: null,
+    summary: {
+      tabCount: 0,
+      inspectableTabCount: 0,
+      activeTabCount: 0,
+      pageSnapshotVisibleTextLength: 0,
+      pageSnapshotFormControlCount: 0,
+    },
+    redaction: {
+      urlQuery: "not-observed",
+      titles: "not-observed",
+      pageContent: "not-read",
+      cookies: "not-read",
+      source: "none",
+      pageSnapshot: "not-run",
+      debugProbe: "not-run",
+    },
   };
 }
 
@@ -357,6 +378,14 @@ function buildProviderAdvertisement(snapshot) {
         portable: true,
       },
       {
+        schema: "gamecult.loki.chrome_page_snapshot.v0",
+        owner: providerId,
+        authority: "operator-approved-observation",
+        storage: "cultcache-cc",
+        cultMeshAddress: "asgard.localhost.loki.chrome/state/page-snapshot",
+        portable: true,
+      },
+      {
         schema: "gamecult.eve.surface.v1",
         owner: providerId,
         authority: "derived",
@@ -399,6 +428,17 @@ function buildProviderAdvertisement(snapshot) {
           updatedAt: snapshot.debugProbe?.ingestedAt ?? null,
         },
       },
+      {
+        id: "loki.chrome.page_snapshot",
+        kind: "cc-export",
+        path: "state/loki.chrome_page_snapshot.cc",
+        schemas: ["gamecult.loki.chrome_page_snapshot.v0"],
+        redaction: snapshot.pageSnapshot?.redaction ?? "not-run",
+        freshness: {
+          state: snapshot.pageSnapshot ? "fresh" : "missing",
+          updatedAt: snapshot.pageSnapshot?.ingestedAt ?? null,
+        },
+      },
     ],
     surfaces: [
       {
@@ -424,8 +464,8 @@ function buildProviderAdvertisement(snapshot) {
       {
         kind: "chrome-extension-ingest",
         address: snapshot.extension.ingestEndpoint,
-        carries: ["chrome-extension-tab-metadata"],
-        note: "Preferred drop-in Chrome path; extension observes tab metadata and can run explicit chrome.debugger sweeps.",
+        carries: ["chrome-extension-tab-metadata", "explicit-active-page-snapshot"],
+        note: "Preferred drop-in Chrome path; extension observes tab metadata and can run explicit operator-triggered page snapshots and chrome.debugger sweeps.",
       },
       {
         kind: "local-cultcache-witness",
@@ -435,6 +475,7 @@ function buildProviderAdvertisement(snapshot) {
           "state/loki.provider_advertisement.cc",
           "state/loki.eve_surface.cc",
           "state/loki.chrome_debug_probe.cc",
+          "state/loki.chrome_page_snapshot.cc",
         ],
       },
     ],
@@ -495,6 +536,14 @@ function buildEveSurface(snapshot) {
                   ? `${snapshot.summary.debugProbeAttachedTabCount}/${snapshot.summary.debugProbeAttemptedTabCount} tabs`
                   : "not run",
                 snapshot.debugProbe ? "ok" : "muted",
+              ),
+              metric(
+                "page-snapshot",
+                "Page snapshot",
+                snapshot.pageSnapshot
+                  ? `${snapshot.summary.pageSnapshotVisibleTextLength} chars`
+                  : "not captured",
+                snapshot.pageSnapshot ? "ok" : "muted",
               ),
               {
                 id: "loki.chrome.extension-endpoint",
@@ -614,6 +663,9 @@ async function publishSnapshot(config, snapshot) {
     snapshot.debugProbe
       ? writeTypedDocument(join(config.stateDir, "loki.chrome_debug_probe.cc"), snapshot.debugProbe)
       : Promise.resolve(),
+    snapshot.pageSnapshot
+      ? writeTypedDocument(join(config.stateDir, "loki.chrome_page_snapshot.cc"), snapshot.pageSnapshot)
+      : Promise.resolve(),
   ]);
 
   return { advertisement, surface };
@@ -674,6 +726,7 @@ function startExtensionIngestServer(config) {
           activeSource: snapshot.activeSource,
           tabs: snapshot.summary.tabCount,
           debugProbe: snapshot.debugProbe ? snapshot.debugProbe : null,
+          pageSnapshot: snapshot.pageSnapshot ? snapshot.pageSnapshot : null,
           observedAt: snapshot.observedAt,
         });
         return;
